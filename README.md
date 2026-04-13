@@ -1,4 +1,4 @@
-# cost-aware-bedrock
+# bedrock-cost-guard
 
 A fast TypeScript wrapper around AWS Bedrock Runtime SDK (v3) that adds cost-aware controls by user and team.
 
