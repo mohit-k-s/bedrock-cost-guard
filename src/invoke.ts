@@ -1,28 +1,50 @@
 import {
   BedrockRuntimeClient,
   ConverseCommand,
+  ConverseStreamCommand,
   type ConverseCommandInput,
   type ConverseCommandOutput,
+  type ConverseStreamCommandInput,
+  type ConverseStreamCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
 import { randomUUID } from "node:crypto";
 import { computeActualCostUsd, estimateCostUsd, estimateInputTokensFromJsonString } from "./cost.js";
 import { PolicyEngine } from "./policy-engine.js";
-import type { InvokeContext, PolicyStore, PricingStore, UsageExtractor, UsageStore } from "./types.js";
+import type {
+  BudgetDecision,
+  InvokeContext,
+  PolicyStore,
+  PricingStore,
+  Usage,
+  UsageExtractor,
+  UsageStore,
+} from "./types.js";
+
+type ConverseStreamEvent = NonNullable<ConverseStreamCommandOutput["stream"]> extends AsyncIterable<infer T>
+  ? T
+  : never;
+
+export interface StreamUsageExtractor {
+  extract(event: ConverseStreamEvent): Usage | undefined;
+}
 
 export type CostAwareBedrockOptions = {
   policyStore: PolicyStore;
   pricingStore: PricingStore;
   usageStore: UsageStore;
   usageExtractor?: UsageExtractor<ConverseCommandOutput>;
+  streamUsageExtractor?: StreamUsageExtractor;
 };
 
 export class CostAwareBedrock {
   private readonly policyEngine: PolicyEngine;
   private readonly usageExtractor: UsageExtractor<ConverseCommandOutput>;
+  private readonly streamUsageExtractor: StreamUsageExtractor;
 
   constructor(private readonly client: BedrockRuntimeClient, private readonly options: CostAwareBedrockOptions) {
     this.policyEngine = new PolicyEngine(options.policyStore, options.usageStore);
     this.usageExtractor = options.usageExtractor ?? new ConverseUsageExtractor();
+    this.streamUsageExtractor = options.streamUsageExtractor ?? new ConverseStreamMetadataUsageExtractor();
   }
 
   async converse(input: ConverseCommandInput, context: InvokeContext): Promise<ConverseCommandOutput> {
@@ -31,16 +53,117 @@ export class CostAwareBedrock {
     const modelId = input.modelId;
     if (!modelId) throw new Error("modelId is required");
 
-    const pricing = await this.options.pricingStore.get(modelId);
-    if (!pricing) throw new Error(`No pricing found for model: ${modelId}`);
+    const prepared = await this.prepareInvocation({
+      modelId,
+      messages: input.messages,
+      maxOutputTokens: input.inferenceConfig?.maxTokens ?? 0,
+      context,
+    });
 
-    const estimatedInputTokens = estimateInputTokensFromJsonString(JSON.stringify(input.messages ?? []));
-    const maxOutputTokens = input.inferenceConfig?.maxTokens ?? 0;
-    const estimatedUsd = estimateCostUsd({ pricing, estimatedInputTokens, maxOutputTokens });
+    const resolvedInput: ConverseCommandInput =
+      prepared.resolvedModelId === modelId ? input : { ...input, modelId: prepared.resolvedModelId };
+
+    const response = await this.client.send(new ConverseCommand(resolvedInput));
+    const usage = this.usageExtractor.extract(response);
+
+    await this.recordUsage({
+      context,
+      modelId: prepared.resolvedModelId,
+      estimatedUsd: prepared.estimatedUsd,
+      usage,
+      decision: prepared.decision,
+    });
+
+    return response;
+  }
+
+  async converseStream(input: ConverseStreamCommandInput, context: InvokeContext): Promise<ConverseStreamCommandOutput> {
+    this.assertContext(context);
+
+    const modelId = input.modelId;
+    if (!modelId) throw new Error("modelId is required");
+
+    const prepared = await this.prepareInvocation({
+      modelId,
+      messages: input.messages,
+      maxOutputTokens: input.inferenceConfig?.maxTokens ?? 0,
+      context,
+    });
+
+    const resolvedInput: ConverseStreamCommandInput =
+      prepared.resolvedModelId === modelId ? input : { ...input, modelId: prepared.resolvedModelId };
+
+    const response = await this.client.send(new ConverseStreamCommand(resolvedInput));
+
+    if (!response.stream) {
+      await this.recordUsage({
+        context,
+        modelId: prepared.resolvedModelId,
+        estimatedUsd: prepared.estimatedUsd,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        decision: prepared.decision,
+      });
+      return response;
+    }
+
+    const requestId = randomUUID();
+    const sourceStream = response.stream;
+    const usageStore = this.options.usageStore;
+    const pricingStore = this.options.pricingStore;
+    const streamUsageExtractor = this.streamUsageExtractor;
+
+    const wrappedStream = (async function* () {
+      let usage: Usage = { inputTokens: 0, outputTokens: 0 };
+
+      try {
+        for await (const event of sourceStream) {
+          const extracted = streamUsageExtractor.extract(event);
+          if (extracted) usage = extracted;
+          yield event;
+        }
+      } finally {
+        const pricing = await pricingStore.get(prepared.resolvedModelId);
+        if (!pricing) throw new Error(`No pricing found for model: ${prepared.resolvedModelId}`);
+        const actualUsd = computeActualCostUsd(pricing, usage);
+
+        await usageStore.recordUsage({
+          requestId,
+          context,
+          modelId: prepared.resolvedModelId,
+          estimatedUsd: prepared.estimatedUsd,
+          actualUsd,
+          usage,
+          decision: prepared.decision,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    })();
+
+    return {
+      ...response,
+      stream: wrappedStream,
+    };
+  }
+
+  private async prepareInvocation(args: {
+    modelId: string;
+    messages: unknown;
+    maxOutputTokens: number;
+    context: InvokeContext;
+  }): Promise<{ resolvedModelId: string; estimatedUsd: number; decision: BudgetDecision }> {
+    const pricing = await this.options.pricingStore.get(args.modelId);
+    if (!pricing) throw new Error(`No pricing found for model: ${args.modelId}`);
+
+    const estimatedInputTokens = estimateInputTokensFromJsonString(JSON.stringify(args.messages ?? []));
+    const estimatedUsd = estimateCostUsd({
+      pricing,
+      estimatedInputTokens,
+      maxOutputTokens: args.maxOutputTokens,
+    });
 
     const decision = await this.policyEngine.evaluate({
-      context,
-      modelId,
+      context: args.context,
+      modelId: args.modelId,
       estimatedUsd,
       now: new Date(),
     });
@@ -49,29 +172,34 @@ export class CostAwareBedrock {
       throw new Error(`BudgetPolicyDenied: ${decision.reason}`);
     }
 
-    const resolvedModelId = decision.modelId ?? modelId;
-    const resolvedInput: ConverseCommandInput =
-      resolvedModelId === modelId ? input : { ...input, modelId: resolvedModelId };
+    return {
+      resolvedModelId: decision.modelId ?? args.modelId,
+      estimatedUsd,
+      decision,
+    };
+  }
 
-    const response = await this.client.send(new ConverseCommand(resolvedInput));
-    const usage = this.usageExtractor.extract(response);
-    const actualPricing = await this.options.pricingStore.get(resolvedModelId);
-    if (!actualPricing) throw new Error(`No pricing found for model: ${resolvedModelId}`);
-
-    const actualUsd = computeActualCostUsd(actualPricing, usage);
+  private async recordUsage(args: {
+    context: InvokeContext;
+    modelId: string;
+    estimatedUsd: number;
+    usage: Usage;
+    decision: BudgetDecision;
+  }): Promise<void> {
+    const pricing = await this.options.pricingStore.get(args.modelId);
+    if (!pricing) throw new Error(`No pricing found for model: ${args.modelId}`);
+    const actualUsd = computeActualCostUsd(pricing, args.usage);
 
     await this.options.usageStore.recordUsage({
       requestId: randomUUID(),
-      context,
-      modelId: resolvedModelId,
-      estimatedUsd,
+      context: args.context,
+      modelId: args.modelId,
+      estimatedUsd: args.estimatedUsd,
       actualUsd,
-      usage,
-      decision,
+      usage: args.usage,
+      decision: args.decision,
       timestamp: new Date().toISOString(),
     });
-
-    return response;
   }
 
   private assertContext(context: InvokeContext): void {
@@ -86,6 +214,18 @@ export class ConverseUsageExtractor implements UsageExtractor<ConverseCommandOut
     return {
       inputTokens: response.usage?.inputTokens ?? 0,
       outputTokens: response.usage?.outputTokens ?? 0,
+    };
+  }
+}
+
+export class ConverseStreamMetadataUsageExtractor implements StreamUsageExtractor {
+  extract(event: ConverseStreamEvent): Usage | undefined {
+    const metadata = (event as { metadata?: { usage?: { inputTokens?: number; outputTokens?: number } } }).metadata;
+    if (!metadata?.usage) return undefined;
+
+    return {
+      inputTokens: metadata.usage.inputTokens ?? 0,
+      outputTokens: metadata.usage.outputTokens ?? 0,
     };
   }
 }

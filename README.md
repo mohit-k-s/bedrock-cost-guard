@@ -11,7 +11,7 @@ A fast TypeScript wrapper around AWS Bedrock Runtime SDK (v3) that adds cost-awa
   - daily/monthly budget limits
   - model allowlist checks
   - optional fallback model when thresholds are hit
-- Calls Bedrock `Converse`
+- Calls Bedrock `Converse` and `ConverseStream`
 - Computes post-call actual cost from usage tokens
 - Records usage for user/team aggregate accounting
 

@@ -1,4 +1,4 @@
-export { CostAwareBedrock, ConverseUsageExtractor } from "./invoke.js";
+export { CostAwareBedrock, ConverseUsageExtractor, ConverseStreamMetadataUsageExtractor } from "./invoke.js";
 export { PolicyEngine } from "./policy-engine.js";
 export { estimateCostUsd, computeActualCostUsd, estimateInputTokensFromJsonString } from "./cost.js";
 export {
