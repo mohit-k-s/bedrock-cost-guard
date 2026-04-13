@@ -200,4 +200,67 @@ describe("CostAwareBedrock", () => {
     expect(monthlyUser.outputTokens).toBe(60);
     expect(monthlyUser.spentUsd).toBeGreaterThan(0);
   });
+
+  it("attributes converseStream usage to request start period across rollover", async () => {
+    vi.useFakeTimers();
+    const start = new Date("2026-01-31T23:59:59.900Z");
+    vi.setSystemTime(start);
+
+    try {
+      const streamResponse: ConverseStreamCommandOutput = {
+        stream: (async function* () {
+          yield {
+            metadata: {
+              metrics: { latencyMs: 12 },
+              usage: { inputTokens: 50, outputTokens: 20, totalTokens: 70 },
+            },
+          };
+        })(),
+      };
+
+      const usageStore = new InMemoryUsageStore();
+      const client = createMockClient(streamResponse);
+      const wrapper = new CostAwareBedrock(client as never, {
+        pricingStore: new InMemoryPricingStore([
+          {
+            modelId: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+            inputPer1kUsd: 0.003,
+            outputPer1kUsd: 0.015,
+            currency: "USD",
+          },
+        ]),
+        policyStore: new InMemoryPolicyStore([
+          {
+            scope: "team",
+            scopeId: "team-alpha",
+            perRequestLimitUsd: 5,
+          },
+        ]),
+        usageStore,
+      });
+
+      const response = await wrapper.converseStream(
+        {
+          modelId: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+          messages: [{ role: "user", content: [{ text: "rollover" }] }],
+          inferenceConfig: { maxTokens: 50 },
+        },
+        { userId: "user-1", teamId: "team-alpha" }
+      );
+
+      vi.setSystemTime(new Date("2026-02-01T00:00:02.000Z"));
+      await collectStream(response.stream!);
+
+      const janMonthly = await usageStore.getAggregate("user", "user-1", "monthly", start);
+      const febMonthly = await usageStore.getAggregate("user", "user-1", "monthly", new Date("2026-02-01T00:00:02.000Z"));
+
+      expect(janMonthly.inputTokens).toBe(50);
+      expect(janMonthly.outputTokens).toBe(20);
+      expect(febMonthly.inputTokens).toBe(0);
+      expect(febMonthly.outputTokens).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });

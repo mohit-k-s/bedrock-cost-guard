@@ -49,6 +49,7 @@ export class CostAwareBedrock {
 
   async converse(input: ConverseCommandInput, context: InvokeContext): Promise<ConverseCommandOutput> {
     this.assertContext(context);
+    const requestStartedAt = new Date();
 
     const modelId = input.modelId;
     if (!modelId) throw new Error("modelId is required");
@@ -58,6 +59,7 @@ export class CostAwareBedrock {
       messages: input.messages,
       maxOutputTokens: input.inferenceConfig?.maxTokens ?? 0,
       context,
+      requestStartedAt,
     });
 
     const resolvedInput: ConverseCommandInput =
@@ -72,6 +74,7 @@ export class CostAwareBedrock {
       estimatedUsd: prepared.estimatedUsd,
       usage,
       decision: prepared.decision,
+      requestStartedAt,
     });
 
     return response;
@@ -79,6 +82,7 @@ export class CostAwareBedrock {
 
   async converseStream(input: ConverseStreamCommandInput, context: InvokeContext): Promise<ConverseStreamCommandOutput> {
     this.assertContext(context);
+    const requestStartedAt = new Date();
 
     const modelId = input.modelId;
     if (!modelId) throw new Error("modelId is required");
@@ -88,6 +92,7 @@ export class CostAwareBedrock {
       messages: input.messages,
       maxOutputTokens: input.inferenceConfig?.maxTokens ?? 0,
       context,
+      requestStartedAt,
     });
 
     const resolvedInput: ConverseStreamCommandInput =
@@ -102,6 +107,7 @@ export class CostAwareBedrock {
         estimatedUsd: prepared.estimatedUsd,
         usage: { inputTokens: 0, outputTokens: 0 },
         decision: prepared.decision,
+        requestStartedAt,
       });
       return response;
     }
@@ -134,7 +140,7 @@ export class CostAwareBedrock {
           actualUsd,
           usage,
           decision: prepared.decision,
-          timestamp: new Date().toISOString(),
+          timestamp: requestStartedAt.toISOString(),
         });
       }
     })();
@@ -150,6 +156,7 @@ export class CostAwareBedrock {
     messages: unknown;
     maxOutputTokens: number;
     context: InvokeContext;
+    requestStartedAt: Date;
   }): Promise<{ resolvedModelId: string; estimatedUsd: number; decision: BudgetDecision }> {
     const pricing = await this.options.pricingStore.get(args.modelId);
     if (!pricing) throw new Error(`No pricing found for model: ${args.modelId}`);
@@ -165,7 +172,7 @@ export class CostAwareBedrock {
       context: args.context,
       modelId: args.modelId,
       estimatedUsd,
-      now: new Date(),
+      now: args.requestStartedAt,
     });
 
     if (!decision.allow) {
@@ -185,6 +192,7 @@ export class CostAwareBedrock {
     estimatedUsd: number;
     usage: Usage;
     decision: BudgetDecision;
+    requestStartedAt: Date;
   }): Promise<void> {
     const pricing = await this.options.pricingStore.get(args.modelId);
     if (!pricing) throw new Error(`No pricing found for model: ${args.modelId}`);
@@ -198,7 +206,7 @@ export class CostAwareBedrock {
       actualUsd,
       usage: args.usage,
       decision: args.decision,
-      timestamp: new Date().toISOString(),
+      timestamp: args.requestStartedAt.toISOString(),
     });
   }
 
