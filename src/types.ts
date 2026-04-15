@@ -52,6 +52,7 @@ export type BudgetDecision =
       reason:
         | "missing_context"
         | "model_not_allowed"
+        | "conflicting_fallback_models"
         | "per_request_limit"
         | "daily_limit"
         | "monthly_limit";

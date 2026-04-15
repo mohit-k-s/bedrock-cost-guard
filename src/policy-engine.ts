@@ -17,15 +17,14 @@ export class PolicyEngine {
 
     const policies = await this.policyStore.getPoliciesForContext(input.context);
     const relevant = this.filterRelevantPolicies(policies, input.context.userId, input.context.teamId);
+    let softThresholdReached = false;
+    const fallbackCandidates = new Set<string>();
 
     for (const policy of relevant) {
-      if (policy.allowedModelIds?.length && !policy.allowedModelIds.includes(input.modelId)) {
-        return { allow: false, reason: "model_not_allowed" };
-      }
-
       if (policy.perRequestLimitUsd !== undefined && input.estimatedUsd > policy.perRequestLimitUsd) {
         if (policy.preferredFallbackModelId && policy.preferredFallbackModelId !== input.modelId) {
-          return { allow: true, reason: "fallback_model", modelId: policy.preferredFallbackModelId };
+          fallbackCandidates.add(policy.preferredFallbackModelId);
+          continue;
         }
         return { allow: false, reason: "per_request_limit" };
       }
@@ -39,12 +38,34 @@ export class PolicyEngine {
       if (policy.softThresholdPct !== undefined) {
         const isSoft = await this.isSoftThresholdReached(policy, input);
         if (isSoft && policy.preferredFallbackModelId && policy.preferredFallbackModelId !== input.modelId) {
-          return { allow: true, reason: "fallback_model", modelId: policy.preferredFallbackModelId };
+          fallbackCandidates.add(policy.preferredFallbackModelId);
+          softThresholdReached = true;
+          continue;
         }
         if (isSoft) {
-          return { allow: true, reason: "soft_threshold" };
+          softThresholdReached = true;
         }
       }
+    }
+
+    const fallbackModelIds = [...fallbackCandidates];
+    if (fallbackModelIds.length > 1) {
+      return { allow: false, reason: "conflicting_fallback_models" };
+    }
+
+    const resolvedModelId = fallbackModelIds[0] ?? input.modelId;
+    for (const policy of relevant) {
+      if (policy.allowedModelIds?.length && !policy.allowedModelIds.includes(resolvedModelId)) {
+        return { allow: false, reason: "model_not_allowed" };
+      }
+    }
+
+    if (fallbackModelIds.length === 1) {
+      return { allow: true, reason: "fallback_model", modelId: resolvedModelId };
+    }
+
+    if (softThresholdReached) {
+      return { allow: true, reason: "soft_threshold" };
     }
 
     return { allow: true, reason: "allow" };

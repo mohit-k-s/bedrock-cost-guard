@@ -8,7 +8,7 @@ import {
 
 const pricingStore = new InMemoryPricingStore([
   {
-    modelId: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     inputPer1kUsd: 0.003,
     outputPer1kUsd: 0.015,
     currency: "USD",
@@ -53,7 +53,7 @@ const wrapped = new CostAwareBedrock(client, {
 async function run() {
   const response = await wrapped.converse(
     {
-      modelId: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+      modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       messages: [
         {
           role: "user",

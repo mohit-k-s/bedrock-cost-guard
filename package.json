@@ -8,7 +8,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run tests --exclude \"**/*.integration.test.ts\"",
+    "test:integration": "vitest run tests/bedrock.integration.test.ts",
+    "test:integration:stream": "vitest run tests/bedrock-stream-multi-model.integration.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.772.0",

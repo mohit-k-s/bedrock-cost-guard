@@ -47,6 +47,43 @@ const wrapped = new CostAwareBedrock(client, {
 });
 ```
 
+## Integration test against Bedrock
+
+There is a live integration test that uses the in-memory stores and makes a real Bedrock `Converse` call.
+
+Set these environment variables before running it:
+
+```bash
+export AWS_REGION=us-east-1
+export RUN_BEDROCK_INTEGRATION=1
+export BEDROCK_MODEL_ID=amazon.nova-lite-v1:0
+export BEDROCK_INPUT_PER_1K_USD=0.00006
+export BEDROCK_OUTPUT_PER_1K_USD=0.00024
+npm run test:integration
+```
+
+The test is defined in `tests/bedrock.integration.test.ts`. It loads values from the repo `.env` file if present. It only runs when `RUN_BEDROCK_INTEGRATION=1`. If that flag is not set, or if `BEDROCK_MODEL_ID`, `BEDROCK_INPUT_PER_1K_USD`, or `BEDROCK_OUTPUT_PER_1K_USD` is missing, the test is skipped.
+
+## Streaming integration test across Nova and Claude Sonnet
+
+There is also a live `converseStream` integration test that runs a small set of prompts against both Nova and Claude Sonnet using the in-memory stores, then prints the in-memory pricing, policy, usage event, and aggregate state.
+
+Set these environment variables before running it:
+
+```bash
+export AWS_REGION=us-east-1
+export RUN_BEDROCK_INTEGRATION=1
+export BEDROCK_NOVA_MODEL_ID=amazon.nova-lite-v1:0
+export BEDROCK_NOVA_INPUT_PER_1K_USD=0.00006
+export BEDROCK_NOVA_OUTPUT_PER_1K_USD=0.00024
+export BEDROCK_CLAUDE_SONNET_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+export BEDROCK_CLAUDE_SONNET_INPUT_PER_1K_USD=0.003
+export BEDROCK_CLAUDE_SONNET_OUTPUT_PER_1K_USD=0.015
+npm run test:integration:stream
+```
+
+The test is defined in `tests/bedrock-stream-multi-model.integration.test.ts`. It loads values from the repo `.env` file if present. It only runs when `RUN_BEDROCK_INTEGRATION=1`. If that flag is not set, or if either model config is incomplete, the test is skipped.
+
 ## DynamoDB-backed stores
 
 See `examples/example-dynamodb.ts`.

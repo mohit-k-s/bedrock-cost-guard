@@ -18,7 +18,7 @@ const wrapped = new CostAwareBedrock(new BedrockRuntimeClient({ region: "us-east
 async function run() {
   const res = await wrapped.converse(
     {
-      modelId: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+      modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       messages: [{ role: "user", content: [{ text: "Summarize this architecture and provide 5 cost optimization ideas." }] }],
       inferenceConfig: { maxTokens: 120 },
     },

@@ -65,7 +65,7 @@ export class CostAwareBedrock {
     const resolvedInput: ConverseCommandInput =
       prepared.resolvedModelId === modelId ? input : { ...input, modelId: prepared.resolvedModelId };
 
-    const response = await this.client.send(new ConverseCommand(resolvedInput));
+    const response = await this.sendConverse(resolvedInput);
     const usage = this.usageExtractor.extract(response);
 
     await this.recordUsage({
@@ -98,7 +98,7 @@ export class CostAwareBedrock {
     const resolvedInput: ConverseStreamCommandInput =
       prepared.resolvedModelId === modelId ? input : { ...input, modelId: prepared.resolvedModelId };
 
-    const response = await this.client.send(new ConverseStreamCommand(resolvedInput));
+    const response = await this.sendConverseStream(resolvedInput);
 
     if (!response.stream) {
       await this.recordUsage({
@@ -158,32 +158,53 @@ export class CostAwareBedrock {
     context: InvokeContext;
     requestStartedAt: Date;
   }): Promise<{ resolvedModelId: string; estimatedUsd: number; decision: BudgetDecision }> {
-    const pricing = await this.options.pricingStore.get(args.modelId);
-    if (!pricing) throw new Error(`No pricing found for model: ${args.modelId}`);
-
     const estimatedInputTokens = estimateInputTokensFromJsonString(JSON.stringify(args.messages ?? []));
-    const estimatedUsd = estimateCostUsd({
-      pricing,
-      estimatedInputTokens,
-      maxOutputTokens: args.maxOutputTokens,
-    });
+    const seenModelIds = new Set<string>();
+    let currentModelId = args.modelId;
+    let finalDecision: BudgetDecision = { allow: true, reason: "allow" };
+    let estimatedUsd = 0;
 
-    const decision = await this.policyEngine.evaluate({
-      context: args.context,
-      modelId: args.modelId,
-      estimatedUsd,
-      now: args.requestStartedAt,
-    });
+    while (true) {
+      if (seenModelIds.has(currentModelId)) {
+        throw new Error(`BudgetPolicyDenied: conflicting_fallback_models`);
+      }
+      seenModelIds.add(currentModelId);
 
-    if (!decision.allow) {
-      throw new Error(`BudgetPolicyDenied: ${decision.reason}`);
+      const pricing = await this.options.pricingStore.get(currentModelId);
+      if (!pricing) throw new Error(`No pricing found for model: ${currentModelId}`);
+
+      estimatedUsd = estimateCostUsd({
+        pricing,
+        estimatedInputTokens,
+        maxOutputTokens: args.maxOutputTokens,
+      });
+
+      const decision = await this.policyEngine.evaluate({
+        context: args.context,
+        modelId: currentModelId,
+        estimatedUsd,
+        now: args.requestStartedAt,
+      });
+
+      if (!decision.allow) {
+        throw new Error(`BudgetPolicyDenied: ${decision.reason}`);
+      }
+
+      finalDecision =
+        currentModelId === args.modelId && !decision.modelId
+          ? decision
+          : { allow: true, reason: "fallback_model", modelId: currentModelId };
+
+      if (!decision.modelId || decision.modelId === currentModelId) {
+        return {
+          resolvedModelId: currentModelId,
+          estimatedUsd,
+          decision: finalDecision,
+        };
+      }
+
+      currentModelId = decision.modelId;
     }
-
-    return {
-      resolvedModelId: decision.modelId ?? args.modelId,
-      estimatedUsd,
-      decision,
-    };
   }
 
   private async recordUsage(args: {
@@ -215,6 +236,43 @@ export class CostAwareBedrock {
       throw new Error("Missing required context: userId and teamId");
     }
   }
+
+  private async sendConverse(input: ConverseCommandInput): Promise<ConverseCommandOutput> {
+    try {
+      return await this.client.send(new ConverseCommand(input));
+    } catch (error) {
+      throw normalizeBedrockInvokeError(error, input.modelId);
+    }
+  }
+
+  private async sendConverseStream(input: ConverseStreamCommandInput): Promise<ConverseStreamCommandOutput> {
+    try {
+      return await this.client.send(new ConverseStreamCommand(input));
+    } catch (error) {
+      throw normalizeBedrockInvokeError(error, input.modelId);
+    }
+  }
+}
+
+function normalizeBedrockInvokeError(error: unknown, modelId: string | undefined): Error {
+  const err = error as { name?: string; message?: string };
+
+  if (err?.name === "ResourceNotFoundException") {
+    const message = err.message ?? "";
+    if (message.includes("model version has reached the end of its life")) {
+      return new Error(
+        `BedrockModelUnavailable: model ${modelId ?? "<unknown>"} is no longer available in Bedrock because that model version reached end of life. Update the configured model ID.`,
+        { cause: error }
+      );
+    }
+
+    return new Error(
+      `BedrockModelUnavailable: model ${modelId ?? "<unknown>"} was not found or is not available in this account or region.`,
+      { cause: error }
+    );
+  }
+
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 export class ConverseUsageExtractor implements UsageExtractor<ConverseCommandOutput> {

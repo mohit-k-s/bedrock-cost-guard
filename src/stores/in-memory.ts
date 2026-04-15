@@ -35,6 +35,10 @@ export class InMemoryPricingStore implements PricingStore {
   set(pricing: Pricing): void {
     this.pricingByModel.set(pricing.modelId, pricing);
   }
+
+  getAll(): Pricing[] {
+    return [...this.pricingByModel.values()];
+  }
 }
 
 export class InMemoryPolicyStore implements PolicyStore {
@@ -54,6 +58,10 @@ export class InMemoryPolicyStore implements PolicyStore {
   setPolicies(policies: BudgetPolicy[]): void {
     this.policies.length = 0;
     this.policies.push(...policies);
+  }
+
+  getAll(): BudgetPolicy[] {
+    return [...this.policies];
   }
 }
 
@@ -88,6 +96,16 @@ export class InMemoryUsageStore implements UsageStore {
 
   getEvents(): UsageRecord[] {
     return [...this.events];
+  }
+
+  getAggregates(): Array<{
+    key: string;
+    value: UsageAggregate;
+  }> {
+    return [...this.aggregates.entries()].map(([key, value]) => ({
+      key,
+      value: { ...value },
+    }));
   }
 }
 
